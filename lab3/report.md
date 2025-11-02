@@ -1,6 +1,28 @@
 # Lab3
 
-## 练习1
+## 练习1-黄尚扬（2313911）
+首先需要include一个sbi.h，而后主体代码部分如下：
+
+```
+clock_set_next_event();
+            static int num = 0;
+            ticks++;
+            if (ticks == TICK_NUM) {
+                print_ticks();
+                ticks = 0;
+                num++;
+                if (num == 10) {
+                    sbi_shutdown();
+                }
+            }
+            break;
+
+```
+
+实现过程：num记录输出次数，并且采用clock_set_next_event()设置下次时钟中断时间；ticks自增定时，每100tick就输出一次；当num==10就关机。
+
+
+当硬件定时器触发中断时，CPU 自动跳转至陷阱入口，保存当前寄存器现场后进入 trap() 函数。系统读取 scause 来判断为定时器中断后，调用 clock_set_next_event() 设置下一次中断时间，并更新系统时钟或触发调度操作。中断处理结束后恢复寄存器状态，通过 sret 返回原程序继续执行，从而实现了周期性的定时器中断响应。
 
 ## 扩展练习1-王湜蔚（2313804）
 
