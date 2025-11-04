@@ -36,8 +36,8 @@ int kern_init(void) {
     intr_enable();  // enable irq interrupt
 
     // 测试异常处理
-    asm(".word 0x00000000"); 
-    asm("ebreak");
+    //asm(".word 0x00000000"); 
+    //asm("ebreak");
 
     /* do nothing */
     while (1)
