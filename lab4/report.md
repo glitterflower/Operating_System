@@ -123,7 +123,7 @@ repeat:
 }
 ```
 
-`last_pid` 记录上次分配的 `PID`，`next_safe` 记录安全分配的上限， `[last_pid, next_safe)` 是安全范围，里面都是没有用过的 `PID`。每次尝试从 `++last_pid` 开始分配，如果在安全范围内直接返回；超过 `MAX_PID` 后重置为1，从头开始分配；超过  `next_safe` 后更新安全范围，扫描所有进程，如果 `last_pid` 与其他进程的 `PID` 重复，则尝试分配 `++last_pid`，如果仍不在安全范围或超过 `MAX_PID` ，重复之前的处理过程；如果没有重复则直接更新安全范围并返回 `last_pid`；
+`last_pid` 记录上次分配的 `PID`，`next_safe` 记录安全分配的上限， `[last_pid, next_safe)` 是安全范围，里面都是没有用过的 `PID`。每次尝试从 `++last_pid` 开始分配，如果在安全范围内直接返回；超过 `MAX_PID` 后重置为1，从头开始分配；超过  `next_safe` 后更新安全范围，扫描所有进程，如果 `last_pid` 与其他进程的 `PID` 重复，则尝试分配 `++last_pid`，如果仍不在安全范围或超过 `MAX_PID` ，重复之前的处理过程；如果没有重复则直接更新安全范围并返回 `last_pid`。`get_pid` 的检查机制确保了每个线程的 `ID` 是唯一的。
 
 ## 练习3
 
@@ -176,24 +176,14 @@ Type 'help' for a list of commands.
 
 ## Challenge 1
 
-```c
-local_intr_save(intr_flag);
-    {
-        sbi_console_putchar((unsigned char)c);
-    }
-local_intr_restore(intr_flag);
-```
+`local_intr_save(intr_flag); … local_intr_restore(intr_flag);` 利用 `sync.h` 中的两个内联函数实现“保存当前中断状态 → 关闭中断 → 按需恢复中断”：
 
-这段代码是临界区保护，作用于临时关闭中断，然后执行一段不能被中断的代码，执行完之后再恢复之前的中断状态。
+`local_intr_save(flag)` 展开后调用 `__intr_save()`：读取 `sstatus` 寄存器，若检测到全局中断使能位 `SSTATUS_SIE` 置 1，则调用 `intr_disable()` 关中断，并返回 1；否则返回 0。这样 `flag` 就记住了“进入临界区前中断是否开启”。
 
-local_intr_save(intr_flag);主要作用是保存并关闭中断。
-
-sbi_console_putchar((unsigned char)c);是调用SBI提供的控制台输出函数，这类操作如果在执行时被中断打断可能导致输出混乱、数据损坏或者死锁。
-
-local_intr_restore(intr_flag);用于根据之前保存的局部变量intr_flag，恢复中断使能状态，即调用local_intr_save之前的状态。
+退出临界区时执行 `local_intr_restore(flag)`，展开为 `__intr_restore(flag)`：只有当 `flag` 为 1（即之前确实关过中断）时才调用 `intr_enable()`，把中断状态恢复为进入前的样子；若原本就是关闭状态，就保持不变。
 
 ## Challenge 2
 
-sv32、sv39、sv48都是基于多层页表实现的虚拟地址映射方式，分别对应2、3、4级页表。get_pte()中的实现是sv39的三级页表特例。这两段代码相似的原因是其都在访问某一层页表并试图向下搜索所需地址页。
+`sv32、sv39、sv48` 都是基于多层页表实现的虚拟地址映射方式，分别对应2、3、4级页表。`get_pte()` 中的实现是 `sv39` 的三级页表特例。这两段代码相似的原因是其都在访问某一层页表并试图向下搜索所需地址页。
 
-目前get_pte()函数将页表项的查找和页表项的分配合并在一个函数里，我认为是好的写法。因为在调用时无需关心其存在性；并且由于页表项的分配也依托于遍历，所以如此写可以避免代码冗余。
+目前 `get_pte()` 函数将页表项的查找和页表项的分配合并在一个函数里，我认为是好的写法。因为在调用时无需关心其存在性；并且由于页表项的分配也依托于遍历，所以如此写可以避免代码冗余。
