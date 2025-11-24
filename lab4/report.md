@@ -173,3 +173,27 @@ kernel panic at kern/process/proc.c:378:
 Welcome to the kernel debug monitor!!
 Type 'help' for a list of commands.
 ```
+
+## Challenge 1
+
+```c
+local_intr_save(intr_flag);
+    {
+        sbi_console_putchar((unsigned char)c);
+    }
+local_intr_restore(intr_flag);
+```
+
+这段代码是临界区保护，作用于临时关闭中断，然后执行一段不能被中断的代码，执行完之后再恢复之前的中断状态。
+
+local_intr_save(intr_flag);主要作用是保存并关闭中断。
+
+sbi_console_putchar((unsigned char)c);是调用SBI提供的控制台输出函数，这类操作如果在执行时被中断打断可能导致输出混乱、数据损坏或者死锁。
+
+local_intr_restore(intr_flag);用于根据之前保存的局部变量intr_flag，恢复中断使能状态，即调用local_intr_save之前的状态。
+
+## Challenge 2
+
+sv32、sv39、sv48都是基于多层页表实现的虚拟地址映射方式，分别对应2、3、4级页表。get_pte()中的实现是sv39的三级页表特例。这两段代码相似的原因是其都在访问某一层页表并试图向下搜索所需地址页。
+
+目前get_pte()函数将页表项的查找和页表项的分配合并在一个函数里，我认为是好的写法。因为在调用时无需关心其存在性；并且由于页表项的分配也依托于遍历，所以如此写可以避免代码冗余。
