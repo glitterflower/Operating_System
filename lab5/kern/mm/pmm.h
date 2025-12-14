@@ -40,6 +40,7 @@ size_t nr_free_pages(void);
 pte_t *get_pte(pde_t *pgdir, uintptr_t la, bool create);
 struct Page *get_page(pde_t *pgdir, uintptr_t la, pte_t **ptep_store);
 void page_remove(pde_t *pgdir, uintptr_t la);
+void page_remove_pte(pde_t *pgdir, uintptr_t la, pte_t *ptep);
 int page_insert(pde_t *pgdir, struct Page *page, uintptr_t la, uint32_t perm);
 
 void load_esp0(uintptr_t esp0);

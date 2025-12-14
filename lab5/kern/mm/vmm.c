@@ -264,6 +264,121 @@ bool copy_to_user(struct mm_struct *mm, void *dst, const void *src, size_t len)
     return 1;
 }
 
+// do_pgfault - handle page fault for Copy-on-Write
+// @mm: the memory manager
+// @error_code: the error code from trap
+// @addr: the fault address
+int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
+{
+    if (mm == NULL)
+    {
+        return -E_INVAL;
+    }
+    
+    // Check if address is in valid range
+    struct vma_struct *vma = find_vma(mm, addr);
+    if (vma == NULL || addr < vma->vm_start)
+    {
+        return -E_INVAL;
+    }
+    
+    // Get page table entry
+    pte_t *ptep = get_pte(mm->pgdir, addr, 1);
+    if (ptep == NULL)
+    {
+        return -E_NO_MEM;
+    }
+    
+    // Case 1: Page exists
+    if (*ptep & PTE_V)
+    {
+        // COW: only handle write fault on COW pages
+        if ((*ptep & PTE_COW) && (error_code == CAUSE_STORE_PAGE_FAULT))
+        {
+            struct Page *page = pte2page(*ptep);
+            int ref = page_ref(page);
+            
+            if (ref > 1)
+            {
+                // Multiple references: copy the page
+                struct Page *new_page = alloc_page();
+                if (new_page == NULL)
+                {
+                    return -E_NO_MEM;
+                }
+                
+                memcpy(page2kva(new_page), page2kva(page), PGSIZE);
+                page_ref_dec(page);
+                
+                uint32_t perm = (*ptep & PTE_USER) & ~PTE_COW;
+                page_remove_pte(mm->pgdir, addr, ptep);
+                page_insert(mm->pgdir, new_page, addr, perm | PTE_W);
+                return 0;
+            }
+            else
+            {
+                // Only one reference: just remove COW and restore write
+                *ptep = (*ptep & ~PTE_COW) | PTE_W;
+                tlb_invalidate(mm->pgdir, addr);
+                return 0;
+            }
+        }
+        
+        // Page exists but not COW write fault
+        // For FETCH/LOAD faults, check if page has correct permissions
+        if (error_code == CAUSE_FETCH_PAGE_FAULT)
+        {
+            // Instruction fetch: need execute permission
+            if (*ptep & PTE_X)
+            {
+                // Has execute permission but faulted - TLB issue
+                tlb_invalidate(mm->pgdir, addr);
+                return 0;
+            }
+            return -E_INVAL;
+        }
+        else if (error_code == CAUSE_LOAD_PAGE_FAULT)
+        {
+            // Data load: need read permission
+            if (*ptep & PTE_R)
+            {
+                // Has read permission but faulted - TLB issue
+                tlb_invalidate(mm->pgdir, addr);
+                return 0;
+            }
+            return -E_INVAL;
+        }
+        else if (error_code == CAUSE_STORE_PAGE_FAULT)
+        {
+            // Data store: need write permission
+            if (*ptep & PTE_W)
+            {
+                // Has write permission but faulted - TLB issue
+                tlb_invalidate(mm->pgdir, addr);
+                return 0;
+            }
+            return -E_INVAL;
+        }
+        
+        // Unknown error code
+        return -E_INVAL;
+    }
+    
+    // Case 2: Page doesn't exist - allocate new page
+    uint32_t perm = PTE_U;
+    if (vma->vm_flags & VM_WRITE) perm |= PTE_W;
+    if (vma->vm_flags & VM_READ) perm |= PTE_R;
+    if (vma->vm_flags & VM_EXEC) perm |= PTE_X;
+    
+    struct Page *page = pgdir_alloc_page(mm->pgdir, addr, perm);
+    if (page == NULL)
+    {
+        return -E_NO_MEM;
+    }
+    
+    return 0;
+}
+
 // vmm_init - initialize virtual memory management
 //          - now just call check_vmm to check correctness of vmm
 void vmm_init(void)
