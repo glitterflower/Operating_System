@@ -2,6 +2,24 @@
 
 ## 练习1
 
+设置trapframe内容如下：
+
+```c
+tf->gpr.sp = USTACKTOP;
+tf->epc = elf->e_entry;
+tf->status = (sstatus & ~SSTATUS_SPP) | SSTATUS_SPIE;
+```
+
+首先用户程序的栈空间在 `USTACKTOP - USTACKSIZE ~ USTACKTOP`；将栈顶地址 `USTACKTOP` 赋值给 `tf->gpr.sp`，这样应用程序执行时，`sp` 指向用户栈顶。
+
+而后 `ELF` 文件头中有 `e_entry` 字段，表示程序入口。设置 `tf->epc = elf->e_entry`，保证执行从应用程序的第一条指令开始。
+
+最后，`RISC-V` 中的 `sstatus` 用于控制特权级。将原 `trapframe` 中的 `status` 保存的内核态 `sstatus` 修改 `SPP` 位为 0，以此表示用户态。
+
+用户态进程被 `ucore` 选择占用 `CPU` 执行（`RUNNING态`）到具体执行应用程序第一条指令的整个经过如下：
+
+首先内核分配内核栈和页表，并在 `load_icode` 中设置 `trapframe`，包括用户栈指针、程序入口地址以及状态寄存器为用户态。随后内核将该进程置为就绪状态，调度器从就绪队列中选择该进程并将其状态置为运行，同时通过上下文切换保存当前进程状态并用  `switch_to` 加载新进程内核上下文。而后内核激活该进程的页表，使用户虚拟地址生效，然后在内核栈中执行 `sret` 返回用户态。`CPU` 根据 `trapframe` 的寄存器状态，切换到用户态，从程序入口地址 `epc` 开始执行应用程序的第一条指令，进程正式进入用户态执行。
+
 ## 练习2
 
 创建子进程时会拷贝当前进程（父进程）的地址空间到新进程（子进程）中，补充 `copy_range` 函数中对此的实现：
@@ -135,6 +153,55 @@ int copy_range(pde_t *to, pde_t *from, uintptr_t start, uintptr_t end,
     [进程终止]
 ```
 
+## 运行结果
+
+执行 `make grade` 指令测试 `user` 目录下的应用程序，运行结果如下：
+
+```c
+badsegment:              (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+divzero:                 (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+softint:                 (1.0s)
+  -check result:                             OK
+  -check output:                             OK
+faultread:               (30.9s)
+  -check result:                             OK
+  -check output:                             OK
+faultreadkernel:         (31.0s)
+  -check result:                             OK
+  -check output:                             OK
+hello:                   (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+testbss:                 (30.9s)
+  -check result:                             OK
+  -check output:                             OK
+pgdir:                   (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+yield:                   (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+badarg:                  (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+exit:                    (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+spin:                    (4.1s)
+  -check result:                             OK
+  -check output:                             OK
+forktest:                (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+Total Score: 130/130
+```
+
+所有的测试样例都输出 `ok`， `faultread`、`faultreadkernel` 和 `testbss` 的运行时间很长，与 `grade.sh` 中的`default_timeout` 相当，观察他们的输出日志，发现输出了很多的 `page fault`，因为我们目前的代码在缺页时只是输出相应信息，没有进行对应的处理，所以程序就一直停留在缺页错误中。
+
 ## 扩展练习1
 
 通过 `share` 标志决定使用写时复制（`share=1`）还是直接复制（`share=0`）。添加一个 `COW` 的标志位来标记写时需要复制的页面：
@@ -163,10 +230,10 @@ if (perm & PTE_W) {
     }
 ```
 
-对于可写页面：父子共享同一物理页，父进程和子进程的 `PTE` 都标记为只读+`COW`，增加引用计数;而只读页面直接共享就可以。
+对于可写页面：父子共享同一物理页，父进程和子进程的 `PTE` 都标记为只读+`COW`，增加引用计数；而只读页面直接共享就可以。
 
-遇到 `CAUSE_FETCH_PAGE_FAULT`、
-`CAUSE_LOAD_PAGE_FAULT` 和 `CAUSE_STORE_PAGE_FAULT` 三种缺页异常时，调用 `do_pgfault` 函数进行处理：
+遇到 `CAUSE_FETCH_PAGE_FAULT`（取指时缺页）、
+`CAUSE_LOAD_PAGE_FAULT`（读内存时缺页） 和 `CAUSE_STORE_PAGE_FAULT`（写内存时缺页） 三种缺页异常时，调用 `do_pgfault` 函数进行处理：
 
 ```c
 if (current != NULL && current->mm != NULL)
@@ -178,12 +245,31 @@ if (current != NULL && current->mm != NULL)
 }
 ```
 
+虽然 `COW` 只需要在写访问时触发缺页并复制页，即只需要处理写内存时缺页，但既然我们都要实现缺页处理代码了，不如一次性把所有缺页情况都处理了。触发缺页异常时，如果当前进程存在且拥有用户态地址空间，调用`do_pgfault` 函数处理缺页，传入当前进程的内存管理结构、异常原因和触发地址，如果处理失败，调用 `do_exit(-E_KILLED)` 终止当前进程。
+
 实现缺页异常处理函数 `do_pgfault`：
 
 ```c
 int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
 {
-    // Check···
+    if (mm == NULL)
+    {
+        return -E_INVAL;
+    }
+    
+    // Check if address is in valid range
+    struct vma_struct *vma = find_vma(mm, addr);
+    if (vma == NULL || addr < vma->vm_start)
+    {
+        return -E_INVAL;
+    }
+    
+    // Get page table entry
+    pte_t *ptep = get_pte(mm->pgdir, addr, 1);
+    if (ptep == NULL)
+    {
+        return -E_NO_MEM;
+    }
     
     // Case 1: Page exists
     if (*ptep & PTE_V)
@@ -275,7 +361,13 @@ int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
 }
 ```
 
+`do_pgfault` 处理三种情况：页不存在、写时复制和权限问题。
+
 检测到 `COW` 页面的写操作（`STORE_PAGE_FAULT`）时，若 `ref > 1`，则分配新页、复制内容、更新当前进程的 `PTE` 指向新页并恢复写权限；若 `ref = 1`，直接移除 `COW` 标记并恢复写权限。
+
+页存在但权限有问题，取指缺页（`FETCH_PAGE_FAULT`）时，若 `PTE` 有执行权限（`PTE_X`），刷新 `TLB`（可能是 `TLB` 不一致）；否则返回错误。读缺页（`LOAD_PAGE_FAULT`）时，若 PTE 有读权限（`PTE_R`），刷新 `TLB`；否则返回错误。写缺页（`STORE_PAGE_FAULT`）时，若 `PTE` 有写权限（`PTE_W`），刷新 `TLB`；否则返回错误。这些通常由 `TLB` 不一致引起，刷新后即可恢复。
+
+页不存在时，分配一个新页：根据 `vma` 的标志设置页权限：用户态（`PTE_U`），若 `vma` 允许写则加 `PTE_W`，允许读则加 `PTE_R`，允许执行则加 `PTE_X`。调用 `pgdir_alloc_page` 分配物理页并建立映射。
 
 状态转换图如下：
 
@@ -293,6 +385,51 @@ int do_pgfault(struct mm_struct *mm, uint32_t error_code, uintptr_t addr)
 
 3. PRIVATE_WRITABLE
    └─[page_ref_dec, ref=0]→ FREED (释放页面)
+```
+
+实现写时复制后，再次执行 `make grade` 指令， `faultread`、`faultreadkernel` 和 `testbss` 的运行时间都变为1s左右，缺页情况得到处理：
+
+```c
+badsegment:              (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+divzero:                 (1.0s)
+  -check result:                             OK
+  -check output:                             OK
+softint:                 (1.0s)
+  -check result:                             OK
+  -check output:                             OK
+faultread:               (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+faultreadkernel:         (1.0s)
+  -check result:                             OK
+  -check output:                             OK
+hello:                   (1.0s)
+  -check result:                             OK
+  -check output:                             OK
+testbss:                 (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+pgdir:                   (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+yield:                   (1.0s)
+  -check result:                             OK
+  -check output:                             OK
+badarg:                  (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+exit:                    (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+spin:                    (4.2s)
+  -check result:                             OK
+  -check output:                             OK
+forktest:                (1.1s)
+  -check result:                             OK
+  -check output:                             OK
+Total Score: 130/130
 ```
 
 ## 扩展练习2
